@@ -272,6 +272,23 @@ static ssize_t _convolutional_decode(correct_convolutional *conv, size_t num_enc
     }
 
     size_t sets = num_encoded_bits / conv->rate;
+
+    // The decode below splits the trellis into three phases: warmup consumes
+    // groups [0, order-1), inner [order-1, sets-order+1) and tail
+    // [sets-order+1, sets). Those partition [0, sets) only when
+    // sets >= 2*order - 2. Below that the tail's start index falls back inside
+    // the warmup's range, groups are processed twice, and -- because
+    // error_buffer_reset() zeroes every state -- states the trellis has not
+    // reached yet still carry a metric of 0 and compete as though they were
+    // real survivors. The decoder then returns a wrong message with no
+    // indication of failure. Refuse instead.
+    //
+    // Handling short blocks inside the decoder needs more than a bounds fix:
+    // the history buffer's output accounting also assumes the full-width phase
+    // structure. See docs/METHOD.md in the verification harness.
+    if (sets < 2 * conv->order - 2) {
+        return -1;
+    }
     // XXX fix this vvvvvv
     size_t decoded_len_bytes = num_encoded_bytes;
     bit_writer_reconfigure(conv->bit_writer, msg, decoded_len_bytes);

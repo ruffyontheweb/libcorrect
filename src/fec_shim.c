@@ -132,8 +132,29 @@ static void update_viterbi_blk(void *vit, const unsigned char *encoded_soft,
     // what if n_write_bits isn't a multiple of 8?
     // libcorrect can't start and stop at arbitrary indices...
 
-    correct_convolutional_decode_soft(
-        shim->conv, encoded_soft, num_encoded_groups * shim->rate, shim->write_iter);
+    // The decoder needs at least 2*order-2 groups for its three phases to
+    // partition the trellis; below that it refuses. libfec has no such limit,
+    // so pad the trellis rather than fail. The encoder has been driven back to
+    // state zero by the order-1 zero tail bits, so any further zero input keeps
+    // it there and emits all-zero symbols -- appending groups of strong zeros
+    // asserts something true of the encoder and cannot exclude the transmitted
+    // path. Only blocks below the threshold pay for it.
+    size_t min_groups = 2 * shim->order - 2;
+    if (num_encoded_groups < min_groups) {
+        size_t padded_syms = min_groups * shim->rate;
+        uint8_t *padded = calloc(padded_syms, 1);
+        uint8_t *scratch = calloc(min_groups / 8 + 2, 1);
+        if (padded && scratch) {
+            memcpy(padded, encoded_soft, num_encoded_groups * shim->rate);
+            correct_convolutional_decode_soft(shim->conv, padded, padded_syms, scratch);
+            memcpy(shim->write_iter, scratch, n_write_bits / 8);
+        }
+        free(padded);
+        free(scratch);
+    } else {
+        correct_convolutional_decode_soft(
+            shim->conv, encoded_soft, num_encoded_groups * shim->rate, shim->write_iter);
+    }
     shim->write_iter += n_write_bits / 8;
 }
 

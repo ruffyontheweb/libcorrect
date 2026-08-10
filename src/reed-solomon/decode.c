@@ -296,8 +296,32 @@ void correct_reed_solomon_decoder_create(correct_reed_solomon *rs) {
     rs->init_from_roots_scratch[1] = polynomial_create(rs->min_distance);
 }
 
-ssize_t correct_reed_solomon_decode(correct_reed_solomon *rs, const uint8_t *encoded, size_t encoded_length,
-                                    uint8_t *msg) {
+// Emit `out_length` symbols of the (corrected) received polynomial in the
+// caller's coordinate order. out_length == msg_length gives the message;
+// out_length == encoded_length gives the whole corrected codeword, parity
+// included -- the corrections were already applied to those coefficients, so
+// this costs one extra copy of min_distance bytes and nothing else.
+static void rs_emit(const correct_reed_solomon *rs, size_t encoded_length, size_t out_length, uint8_t *out) {
+    for (unsigned int i = 0; i < out_length; i++) {
+        out[i] = rs->received_polynomial.coeff[encoded_length - (i + 1)];
+    }
+}
+
+// Number of symbols this decode actually changed. A located error with a zero
+// magnitude -- which an erasure that was not in error produces -- is not a
+// correction, and libfec does not count it as one.
+static size_t rs_num_corrected(const correct_reed_solomon *rs) {
+    size_t n = 0;
+    for (unsigned int i = 0; i < rs->error_locator.order; i++) {
+        if (rs->error_vals[i]) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static ssize_t rs_decode_impl(correct_reed_solomon *rs, const uint8_t *encoded, size_t encoded_length,
+                              uint8_t *msg, uint8_t *codeword, size_t *num_corrected) {
     if (encoded_length > rs->block_length) {
         return -1;
     }
@@ -334,9 +358,9 @@ ssize_t correct_reed_solomon_decode(correct_reed_solomon *rs, const uint8_t *enc
 
     if (all_zero) {
         // syndromes were all zero, so there was no error in the message
-        // copy to msg and we are done
-        for (unsigned int i = 0; i < msg_length; i++) {
-            msg[i] = rs->received_polynomial.coeff[encoded_length - (i + 1)];
+        rs_emit(rs, encoded_length, codeword ? encoded_length : msg_length, codeword ? codeword : msg);
+        if (num_corrected) {
+            *num_corrected = 0;
         }
         return msg_length;
     }
@@ -371,18 +395,20 @@ ssize_t correct_reed_solomon_decode(correct_reed_solomon *rs, const uint8_t *enc
             field_sub(rs->field, rs->received_polynomial.coeff[rs->error_locations[i]], rs->error_vals[i]);
     }
 
-    for (unsigned int i = 0; i < msg_length; i++) {
-        msg[i] = rs->received_polynomial.coeff[encoded_length - (i + 1)];
+    if (num_corrected) {
+        *num_corrected = rs_num_corrected(rs);
     }
+    rs_emit(rs, encoded_length, codeword ? encoded_length : msg_length, codeword ? codeword : msg);
 
     return msg_length;
 }
 
-ssize_t correct_reed_solomon_decode_with_erasures(correct_reed_solomon *rs, const uint8_t *encoded,
-                                                  size_t encoded_length, const uint8_t *erasure_locations,
-                                                  size_t erasure_length, uint8_t *msg) {
+static ssize_t rs_decode_erasures_impl(correct_reed_solomon *rs, const uint8_t *encoded,
+                                       size_t encoded_length, const uint8_t *erasure_locations,
+                                       size_t erasure_length, uint8_t *msg, uint8_t *codeword,
+                                       size_t *num_corrected) {
     if (!erasure_length) {
-        return correct_reed_solomon_decode(rs, encoded, encoded_length, msg);
+        return rs_decode_impl(rs, encoded, encoded_length, msg, codeword, num_corrected);
     }
 
     if (encoded_length > rs->block_length) {
@@ -435,9 +461,9 @@ ssize_t correct_reed_solomon_decode_with_erasures(correct_reed_solomon *rs, cons
 
     if (all_zero) {
         // syndromes were all zero, so there was no error in the message
-        // copy to msg and we are done
-        for (unsigned int i = 0; i < msg_length; i++) {
-            msg[i] = rs->received_polynomial.coeff[encoded_length - (i + 1)];
+        rs_emit(rs, encoded_length, codeword ? encoded_length : msg_length, codeword ? codeword : msg);
+        if (num_corrected) {
+            *num_corrected = 0;
         }
         return msg_length;
     }
@@ -495,14 +521,45 @@ ssize_t correct_reed_solomon_decode_with_erasures(correct_reed_solomon *rs, cons
             field_sub(rs->field, rs->received_polynomial.coeff[rs->error_locations[i]], rs->error_vals[i]);
     }
 
-    rs->error_locator = placeholder_poly;
-
-    for (unsigned int i = 0; i < msg_length; i++) {
-        msg[i] = rs->received_polynomial.coeff[encoded_length - (i + 1)];
+    if (num_corrected) {
+        *num_corrected = rs_num_corrected(rs);
     }
+    rs_emit(rs, encoded_length, codeword ? encoded_length : msg_length, codeword ? codeword : msg);
+
+    rs->error_locator = placeholder_poly;
 
     polynomial_destroy(temp_poly);
     free(syndrome_copy);
 
     return msg_length;
+}
+
+
+ssize_t correct_reed_solomon_decode(correct_reed_solomon *rs, const uint8_t *encoded, size_t encoded_length,
+                                    uint8_t *msg) {
+    return rs_decode_impl(rs, encoded, encoded_length, msg, NULL, NULL);
+}
+
+ssize_t correct_reed_solomon_decode_with_erasures(correct_reed_solomon *rs, const uint8_t *encoded,
+                                                  size_t encoded_length, const uint8_t *erasure_locations,
+                                                  size_t erasure_length, uint8_t *msg) {
+    return rs_decode_erasures_impl(rs, encoded, encoded_length, erasure_locations, erasure_length, msg,
+                                   NULL, NULL);
+}
+
+ssize_t correct_reed_solomon_decode_codeword(correct_reed_solomon *rs, const uint8_t *encoded,
+                                             size_t encoded_length, uint8_t *codeword) {
+    size_t n = 0;
+    ssize_t ret = rs_decode_impl(rs, encoded, encoded_length, NULL, codeword, &n);
+    return (ret < 0) ? ret : (ssize_t)n;
+}
+
+ssize_t correct_reed_solomon_decode_codeword_with_erasures(correct_reed_solomon *rs, const uint8_t *encoded,
+                                                           size_t encoded_length,
+                                                           const uint8_t *erasure_locations,
+                                                           size_t erasure_length, uint8_t *codeword) {
+    size_t n = 0;
+    ssize_t ret = rs_decode_erasures_impl(rs, encoded, encoded_length, erasure_locations, erasure_length,
+                                          NULL, codeword, &n);
+    return (ret < 0) ? ret : (ssize_t)n;
 }

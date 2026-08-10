@@ -48,15 +48,15 @@ void encode_rs_char(void *rs, const unsigned char *msg, unsigned char *parity) {
     memcpy(parity, shim->msg_out + shim->msg_length, shim->num_roots);
 }
 
-void decode_rs_char(void *rs, unsigned char *block, int *erasure_locations,
-                    int num_erasures) {
+int decode_rs_char(void *rs, unsigned char *block, int *erasure_locations,
+                   int num_erasures) {
     reed_solomon_shim *shim = (reed_solomon_shim *)rs;
     for (int i = 0; i < num_erasures; i++) {
         shim->erasures[i] = (uint8_t)(erasure_locations[i]) - shim->pad;
     }
-    correct_reed_solomon_decode_with_erasures(shim->rs, block, shim->block_length,
-                                              shim->erasures, num_erasures,
-                                              block);
+    ssize_t corrected = correct_reed_solomon_decode_codeword_with_erasures(
+        shim->rs, block, shim->block_length, shim->erasures, num_erasures, block);
+    return (corrected < 0) ? -1 : (int)corrected;
 }
 
 typedef struct {
@@ -131,6 +131,7 @@ static void update_viterbi_blk(void *vit, const unsigned char *encoded_soft,
 
     // what if n_write_bits isn't a multiple of 8?
     // libcorrect can't start and stop at arbitrary indices...
+
     correct_convolutional_decode_soft(
         shim->conv, encoded_soft, num_encoded_groups * shim->rate, shim->write_iter);
     shim->write_iter += n_write_bits / 8;

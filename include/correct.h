@@ -267,6 +267,22 @@ ssize_t correct_reed_solomon_decode_with_erasures(correct_reed_solomon *rs, cons
                                                   const uint8_t *erasure_locations,
                                                   size_t erasure_length, uint8_t *msg);
 
+/* Decode and return the whole corrected CODEWORD, parity included, rather than
+ * just the message. Returns the number of symbols corrected, or -1 if the block
+ * was uncorrectable, in which case `codeword` is not written.
+ *
+ * correct_reed_solomon_decode() applies the error magnitudes to every located
+ * position, including those in the parity region, but then emits only the
+ * message. These entry points emit all of it. `codeword` may alias `encoded`.
+ */
+ssize_t correct_reed_solomon_decode_codeword(correct_reed_solomon *rs, const uint8_t *encoded,
+                                             size_t encoded_length, uint8_t *codeword);
+
+ssize_t correct_reed_solomon_decode_codeword_with_erasures(correct_reed_solomon *rs, const uint8_t *encoded,
+                                                           size_t encoded_length,
+                                                           const uint8_t *erasure_locations,
+                                                           size_t erasure_length, uint8_t *codeword);
+
 /* correct_reed_solomon_destroy releases the resources
  * associated with rs. This pointer should not be
  * used for any functions after this call.

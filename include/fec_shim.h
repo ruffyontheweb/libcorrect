@@ -10,7 +10,9 @@ void *init_rs_char(int symbol_size, int primitive_polynomial, int first_consecut
                    int root_gap, int number_roots, unsigned int pad);
 void free_rs_char(void *rs);
 void encode_rs_char(void *rs, const unsigned char *msg, unsigned char *parity);
-void decode_rs_char(void *rs, unsigned char *block, int *erasure_locations, int num_erasures);
+// Corrects the codeword in place and returns the number of symbols corrected,
+// or -1 if the block was uncorrectable, as libfec does.
+int decode_rs_char(void *rs, unsigned char *block, int *erasure_locations, int num_erasures);
 
 // Convolutional Codes
 

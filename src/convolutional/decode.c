@@ -1,5 +1,8 @@
 #include "correct/convolutional/convolutional.h"
 
+// Ceiling on the Viterbi history buffer, in bytes.
+#define HISTORY_BUFFER_BUDGET_BYTES (8u * 1024u * 1024u)
+
 void conv_decode_print_iter(correct_convolutional *conv, unsigned int iter,
                             unsigned int winner_index) {
     if (iter < 2220) {
@@ -268,7 +271,21 @@ static ssize_t _convolutional_decode(correct_convolutional *conv, size_t num_enc
     if (!conv->has_init_decode) {
         uint64_t max_error_per_input = conv->rate * soft_max;
         unsigned int renormalize_interval = distance_max / max_error_per_input;
-        _convolutional_decode_init(conv, 5 * conv->order, 15 * conv->order, renormalize_interval);
+        // A traceback of 5*order is too shallow -- it costs coding gain on
+        // de-punctured input, where the caller has already removed symbols the
+        // decoder cannot know about. Use 32*order, bounded by a fixed
+        // history-buffer budget so that high-order codes, whose state count
+        // dominates the cost, do not pay for depth they do not need.
+        size_t slice = conv->numstates / 2;
+        size_t max_slices = (slice > 0) ? (HISTORY_BUFFER_BUDGET_BYTES / slice) : 0;
+        unsigned int min_traceback = 32 * conv->order;
+        if (4 * (size_t)min_traceback > max_slices) {
+            min_traceback = (unsigned int)(max_slices / 4);
+        }
+        if (min_traceback < 5 * conv->order) {
+            min_traceback = 5 * conv->order;
+        }
+        _convolutional_decode_init(conv, min_traceback, 3 * min_traceback, renormalize_interval);
     }
 
     size_t sets = num_encoded_bits / conv->rate;
